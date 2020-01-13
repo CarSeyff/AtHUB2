@@ -1,0 +1,318 @@
+# to variance stabilise the data
+suppressPackageStartupMessages(library(edgeR))
+
+# to check the VST fit
+suppressPackageStartupMessages(library(vsn))
+
+# to plot the heatmap
+suppressPackageStartupMessages(library(gplots))
+
+# for pretty colors
+suppressPackageStartupMessages(library(RColorBrewer))
+
+# for reading kallisto data
+suppressPackageStartupMessages(library(tximport))
+
+# for plotting the mean-variance relationship
+suppressPackageStartupMessages(library(vsn))
+
+#' For plotting scatterplots in 3D
+suppressPackageStartupMessages(library(scatterplot3d))
+
+#' Define a palette
+pal <- brewer.pal(8,"Dark2")
+
+#' Save the default margin parameters
+mar=par("mar")
+
+#' source a few helper scripts
+source("featureSelection.R")
+source("plot.multidensity.R")
+
+
+samples <- read.delim("PRN2_HUB2_Samples.txt")
+
+#' Read the tx2gene translation
+tx2gene <- read.table("tx2geneTAIR.txt",
+                      header=TRUE)
+head(tx2gene)
+tx2gene <- tx2gene[,2:1]
+
+#' Get the data
+kallisto <- list.files("kallisto", 
+                       recursive = TRUE, 
+                       pattern = "abundance.tsv",
+                       full.names = TRUE)
+head(kallisto)
+
+#' name them
+names(kallisto) <- sub("_sortmerna.*","",
+                       sapply(strsplit(kallisto, "/"), .subset, 2))
+
+#' match the samples to the files
+kallisto <- kallisto[match(samples$SciLifeID,names(kallisto))]
+
+#' load the data
+tx <- suppressMessages(tximport(files = kallisto, type = "kallisto", txOut = TRUE))
+kt <- round(tx$counts)
+
+#'  And summarize it at the gene level
+counts <- round(summarizeToGene(txi=tx,tx2gene=tx2gene)$counts)
+
+write.table(counts, file = "counts_raw_unnormalized_expression_all.txt")
+
+counts <- read.table("counts_raw_unnormalized_expression_all.txt",
+                     header=TRUE, row.names = 1)
+
+#' The cumulative transcript coverage is deep, about 1000X
+plot(density(log10(rowMeans(counts))),col=pal[1],
+     main="gene mean raw counts distribution",
+     xlab="mean raw counts (log10)")
+
+#' The same is done for the individual
+#' samples colored by genotype. The samples are extremely similar
+#' 
+plot.multidensity(lapply(1:ncol(counts),function(k){log10(counts)[,k]}),
+                  col=pal[as.integer(samples$Genotype)],
+                  legend.x="topright",
+                  legend=levels(samples$Genotype))
+
+
+
+### linear model analysis of RNAseq counts
+
+data = read.delim(input.file, header = T, row.names = 1)
+
+head(counts)
+
+#TMM normalization
+
+library(edgeR)
+dge <- DGEList(counts=counts)  # Finding differentially expressed genes
+nf <- calcNormFactors(dge)  #Culculation of normarization factors for TMM normalization
+
+objects(nf)
+nf$samples
+
+# Select genes with more than 10 read counts in average per library
+c.sum = rowSums(counts)    
+s= c.sum[c.sum>=ncol(counts)*10]
+dat.mat = counts[names(s),]
+
+nrow(dat.mat)
+[1] 17084
+
+# indentify genes with 0 counts
+min = apply(dat.mat, 1, min)
+min = min[min==0]
+dat.mat.0 = dat.mat[names(min), ]
+nrow(dat.mat.0)
+[1] 206
+c.sums2 = rowSums(dat.mat.0)
+max(c.sums2)
+[1] 3270
+s2 = c.sums2[c.sums2 == max(c.sums2)]
+max = dat.mat.0[names(s2), ] ##this is R8_H2/hub2
+
+samples <- read.delim("PRN2_HUB2_Samples.txt")
+
+
+#design of linear model
+#Col-0
+genotype_Col = rep('x01_Col', times=3)
+colname_Col = paste(genotype_Col)
+
+#prn2
+genotype_prn = rep('x02_prn', times=2)
+colname_prn = paste(genotype_prn)
+
+#hub2
+genotype_hub = rep('x03_hub', times=3)
+colname_hub = paste(genotype_hub)
+
+#hub2_prn2
+genotype_hubprn = rep('x04_hubprn', times=3)
+colname_hubprn = paste(genotype_hubprn)
+
+#All
+replicate = c("rep01", "rep02", "rep03", "rep01", "rep03", "rep01", "rep02", "rep03", "rep01", "rep02", "rep03")
+colname_all = rep(c(colname_Col, colname_prn, colname_hub, colname_hubprn))
+
+#model matrix
+colname = paste(colname_all, replicate, sep='_')
+ = factor(colname_all)
+
+design = model.matrix( ~ geno_treat_time_interact -1 + replicate )
+
+rownames(design) = colname
+
+genotype = c('Col', 'prn2', 'hub2', 'hub2prn2')
+
+colnames(design) = c(paste(genotype), 'rep2', 'rep3') 
+
+# voom transformation
+lib.size = colSums(counts)*nf$samples$norm.factors
+v <- voom(dat.mat, design, lib.size=lib.size)
+aaa = v$E
+write.table(aaa, file='log2_Berni_hub2prn2_2019.txt', row.names=T, col.names=T, sep="\t", quote=F)
+
+hist(v$E, breaks=200)
+
+# fitting the model
+fit = lmFit(v, design)
+objects(fit)
+
+fitted_mean = fit$coef[,1:4]
+
+write.table(fitted_mean, file="fitted_mean_hub2prn2_2019.txt", row.names=T, col.names=T, sep="\t", quote=F)
+fitted_se = fit$stdev.unscaled * fit$sigma
+write.table(fitted_se, file='fitted_se_hub2prn2_2019.txt', row.names=T, col.names=T, sep="\t", quote=F)
+
+#Correlation analysis (parametric analysis based on pearson correlation)
+##Col
+
+fitted_mean_Col = fitted_mean[, 1:4]
+
+library(corrplot)
+library(ape)
+
+cor = cor(fitted_mean_Col)
+corrplot.mixed(cor, tl.cex=0.8)
+
+counts.dist = as.dist(1 - cor)
+out = hclust(counts.dist, method="complete")
+plot(out)
+plot(as.phylo(out), type = "fan")
+
+
+##Treatment comparison (between genotypes)
+
+contrast.matrix1 <- makeContrasts(prn2-Col, hub2-Col, hub2prn2-Col,
+                                  levels=design)
+
+fit1 = contrasts.fit(fit, contrast.matrix1)
+
+## empirical Bayes for variance shrinkage
+eb.fit1 = eBayes(fit1)
+
+
+##Correlation analysis
+cor3 = cor(eb.fit1$coef)
+counts.dist3 = as.dist(1 - cor3)
+out3 = hclust(counts.dist3, method="complete")
+plot(out3)
+plot(as.phylo(out3), type = "fan")
+
+
+#caluculation of q value
+
+library(qvalue)
+
+q.val = qvalue(eb.fit1$p.val)$qvalues
+
+
+q.val_Col_prn = q.val[, 'prn2 - Col']
+q.val_Col_hub = q.val[, 'hub2 - Col']
+q.val_Col_hubprn = q.val[, 'hub2prn2 - Col']
+
+
+sum(q.val_Col_prn < 0.05)
+[1] 230
+Col_prn= subset(eb.fit1$coef, q.val_Col_prn < 0.05)
+write.table(Col_prn, file="Col_prn_0.05.txt", row.names=T, col.names=T, sep="\t", quote=F)
+
+sum(q.val_Col_hub < 0.05)
+[1] 2855
+Col_hub= subset(eb.fit1$coef, q.val_Col_hub < 0.05)
+write.table(Col_hub, file="Col_hub_0.05.txt", row.names=T, col.names=T, sep="\t", quote=F)
+
+
+sum(q.val_Col_hubprn < 0.05)
+[1] 1964
+Col_hubprn= subset(eb.fit1$coef, q.val_Col_hubprn < 0.05)
+write.table(Col_hubprn, file="Col_hubprn_0.05.txt", row.names=T, col.names=T, sep="\t", quote=F)
+
+
+sum(q.val_Col_prn < 0.05 | q.val_Col_hub < 0.05 | q.val_Col_hubprn < 0.05)
+[1] 4092
+all_PM= subset(eb.fit1$coef, q.val_Col_prn < 0.05 | q.val_Col_hub < 0.05 | q.val_Col_hubprn < 0.05)
+write.table(all_PM, file="all_Berni_hub2prn2project_0.05.txt", row.names=T, col.names=T, sep="\t", quote=F)
+
+hpal <- colorRampPalette(c("navy","white","firebrick"))(100)
+mar=par("mar")
+heatmap.2(as.matrix(all_PM),distfun = pearson.dist,
+          hclustfun = function(X){hclust(X,method="ward.D")},
+          trace="none",col=hpal)
+heatmap.2(as.matrix(all_PM), dendrogram="row",
+          trace="none",col=hpal, Colv=F)
+
+dev.off()
+##############################################
+##signaling allocation #######################
+##############################################
+
+
+#obtaining all genes that have qVal < 0.05 and log2FC=1/-1 in pib1prn2-col-0
+
+all_hubprn= Col_hubprn
+all_hubprn= subset(all_hubprn, all_hubprn[,'hub2prn2 - Col']< -1 | all_hubprn[,'hub2prn2 - Col']> 1 )
+
+
+#make new contrast using d.k.o.
+contrast.matrix2 <- makeContrasts(prn2-hub2prn2, hub2-hub2prn2, 
+                                  ((hub2prn2-Col)-((prn2-hub2prn2)+(hub2-hub2prn2))),
+                                  levels=design)
+fit2 = contrasts.fit(fit, contrast.matrix2)
+
+## empirical Bayes for variance shrinkage
+eb.fit2 = eBayes(fit2)
+
+objects(eb.fit2)
+
+head(eb.fit2$coefficients)
+abgd <- eb.fit2$coefficients
+q.val2 = qvalue(eb.fit2$p.val)$qvalues
+
+#merging DRGs (from pibprn/Col)
+allocation <-merge(all_hubprn, abgd , by.x = "row.names", by.y = "row.names")
+[1]1217
+write.table(allocation, file='allocation_DRGshub2prn2-col_0.05_1FC.txt', sep='\t', col.names=T, row.names=T, quote=F)
+
+
+#making heatmap with 2 different color scales
+
+sigpibprn <- read.delim("allocation_DRGshub2prn2-col_0.05_1FC.txt", row.names=1)
+head(sigpibprn)
+test <- sigpibprn[,c("hub2prn2...Col", "hub2prn2...Col")]
+#1st heatmap
+y <- heatmap.2(as.matrix(test),
+               trace="none",col=hpal)
+row <- rev(y$rowInd)
+write.table(row, file='rows.txt', sep='\t', col.names=T, row.names=T, quote=F)
+#2nd heatmap
+effects.ord <- read.delim("Effects_ordered.txt", row.names=1)
+hpal3 = colorRampPalette(c("green","black","magenta"))(100)
+xs <- scale(effects.ord)
+heatmap.2(as.matrix(effects.ord),
+          trace="none",col=hpal3,
+          dendrogram="none", Colv="NA", Rowv="NA")
+
+heats <- effects.ord [4:6]
+heatmap.2(as.matrix(heats),
+          trace="none",col=hpal,
+          dendrogram="none", Colv="NA", Rowv="NA")
+#####################
+#######
+
+inAll <- read.delim("Effects_with_Gene.txt", row.names=1)
+
+compen= subset(inAll, inAll[,'HUB2']> -1 & inAll[,'HUB2']< 1 & inAll[,'PRN2'] > -1 & inAll[,'PRN2']< 1)
+minus= subset (compen, )
+
+head(inAll)
+head(compen)
+
+write.table(compen, file='compensatoryGenes.txt', sep='\t', col.names=T, row.names=T, quote=F)
+
+
+
